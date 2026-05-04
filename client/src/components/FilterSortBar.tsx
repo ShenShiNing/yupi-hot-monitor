@@ -6,31 +6,13 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import type { Keyword } from '../services/api';
-
-export interface FilterState {
-  source: string;
-  importance: string;
-  keywordId: string;
-  timeRange: string;
-  isReal: string;
-  sortBy: string;
-  sortOrder: string;
-}
-
-export const defaultFilterState: FilterState = {
-  source: '',
-  importance: '',
-  keywordId: '',
-  timeRange: '',
-  isReal: '',
-  sortBy: 'createdAt',
-  sortOrder: 'desc',
-};
+import { defaultFilterState, type FilterState } from './filterState';
 
 interface FilterSortBarProps {
   filters: FilterState;
   onChange: (filters: FilterState) => void;
   keywords: Keyword[];
+  showKeywordFilter?: boolean;
 }
 
 const SORT_OPTIONS = [
@@ -115,7 +97,7 @@ function Dropdown({
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 4, scale: 0.96 }}
               transition={{ duration: 0.15 }}
-              className="absolute left-0 top-full mt-1 z-50 min-w-[160px] bg-[#0d0d20]/98 backdrop-blur-xl rounded-xl border border-white/10 shadow-2xl overflow-hidden"
+              className="absolute left-0 top-full mt-1 z-50 min-w-40 bg-[#0d0d20]/98 backdrop-blur-xl rounded-xl border border-white/10 shadow-2xl overflow-hidden"
             >
               {options.map((option) => (
                 <button
@@ -140,13 +122,18 @@ function Dropdown({
   );
 }
 
-export default function FilterSortBar({ filters, onChange, keywords }: FilterSortBarProps) {
+export default function FilterSortBar({
+  filters,
+  onChange,
+  keywords,
+  showKeywordFilter = true
+}: FilterSortBarProps) {
   const [showFilters, setShowFilters] = useState(false);
 
   const activeFilterCount = [
     filters.source,
     filters.importance,
-    filters.keywordId,
+    ...(showKeywordFilter ? [filters.keywordId] : []),
     filters.timeRange,
     filters.isReal,
   ].filter(v => v !== '').length;
@@ -171,7 +158,7 @@ export default function FilterSortBar({ filters, onChange, keywords }: FilterSor
       {/* Main Bar: Sort + Filter Toggle */}
       <div className="flex items-center gap-2 flex-wrap">
         {/* Sort Selector */}
-        <div className="flex items-center gap-1 bg-white/[0.03] rounded-xl border border-white/5 p-1">
+        <div className="flex items-center gap-1 bg-white/3 rounded-xl border border-white/5 p-1">
           <ArrowUpDown className="w-3.5 h-3.5 text-slate-600 ml-2" />
           {SORT_OPTIONS.map((opt) => {
             const Icon = opt.icon;
@@ -238,7 +225,7 @@ export default function FilterSortBar({ filters, onChange, keywords }: FilterSor
                 onRemove={() => update('importance', '')}
               />
             )}
-            {filters.keywordId && (
+            {showKeywordFilter && filters.keywordId && (
               <FilterTag
                 label={keywords.find(k => k.id === filters.keywordId)?.text || '关键词'}
                 onRemove={() => update('keywordId', '')}
@@ -269,10 +256,12 @@ export default function FilterSortBar({ filters, onChange, keywords }: FilterSor
             exit={{ opacity: 0, height: 0 }}
             transition={{ duration: 0.2 }}
           >
-            <div className="flex items-center gap-2 flex-wrap p-3 rounded-xl bg-white/[0.02] border border-white/5">
+            <div className="flex items-center gap-2 flex-wrap p-3 rounded-xl bg-white/2 border border-white/5">
               <Dropdown label="来源" value={filters.source} options={SOURCE_OPTIONS} onChange={(v) => update('source', v)} />
               <Dropdown label="重要程度" value={filters.importance} options={IMPORTANCE_OPTIONS} onChange={(v) => update('importance', v)} />
-              <Dropdown label="关键词" value={filters.keywordId} options={keywordOptions} onChange={(v) => update('keywordId', v)} />
+              {showKeywordFilter && (
+                <Dropdown label="关键词" value={filters.keywordId} options={keywordOptions} onChange={(v) => update('keywordId', v)} />
+              )}
               <Dropdown label="时间" value={filters.timeRange} options={TIME_RANGE_OPTIONS} onChange={(v) => update('timeRange', v)} />
               <Dropdown label="真实性" value={filters.isReal} options={REAL_OPTIONS} onChange={(v) => update('isReal', v)} />
             </div>

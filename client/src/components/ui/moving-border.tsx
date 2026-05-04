@@ -2,6 +2,15 @@
 import React from "react";
 import { cn } from "../../lib/utils";
 
+type MovingBorderProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  children: React.ReactNode;
+  duration?: number;
+  className?: string;
+  containerClassName?: string;
+  borderClassName?: string;
+  as?: React.ElementType;
+};
+
 export const MovingBorder = ({
   children,
   duration = 2000,
@@ -10,19 +19,11 @@ export const MovingBorder = ({
   borderClassName,
   as: Component = "button",
   ...otherProps
-}: {
-  children: React.ReactNode;
-  duration?: number;
-  className?: string;
-  containerClassName?: string;
-  borderClassName?: string;
-  as?: any;
-  [key: string]: any;
-}) => {
+}: MovingBorderProps) => {
   return (
     <Component
       className={cn(
-        "relative h-auto w-auto overflow-hidden bg-transparent p-[1px] cursor-pointer",
+        "relative h-auto w-auto overflow-hidden bg-transparent p-px cursor-pointer",
         containerClassName
       )}
       {...otherProps}

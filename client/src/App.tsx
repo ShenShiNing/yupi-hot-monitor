@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Flame, Search, Plus, Bell, Trash2, 
@@ -6,18 +6,20 @@ import {
   Zap, TrendingUp, Twitter, Globe, Eye, Activity, Clock, Target,
   ChevronLeft, ChevronRight,
   MessageCircle, Repeat2, Quote, User, Shield, ShieldAlert,
-  ChevronDown, ChevronUp, ChevronsUpDown, ThermometerSun, FileText
+  ChevronDown, ChevronUp, ChevronsUpDown, ThermometerSun, FileText,
+  Settings, Bot, KeyRound, Link2
 } from 'lucide-react';
 import { 
-  keywordsApi, hotspotsApi, notificationsApi, triggerHotspotCheck,
-  type Keyword, type Hotspot, type Stats, type Notification
+  keywordsApi, hotspotsApi, notificationsApi, settingsApi, triggerHotspotCheck,
+  type HotspotQueryParams, type Keyword, type Hotspot, type SearchHotspot, type Stats, type Notification
 } from './services/api';
-import { onNewHotspot, onNotification, subscribeToKeywords } from './services/socket';
+import { onNewHotspot, onNotification, subscribeToKeywords, unsubscribeFromKeywords } from './services/socket';
 import { cn } from './lib/utils';
 import { Spotlight } from './components/ui/spotlight';
 import { BackgroundBeams } from './components/ui/background-beams';
 import { Meteors } from './components/ui/meteors';
-import FilterSortBar, { defaultFilterState, type FilterState } from './components/FilterSortBar';
+import FilterSortBar from './components/FilterSortBar';
+import { defaultFilterState, type FilterState } from './components/filterState';
 import { sortHotspots } from './utils/sortHotspots';
 import { relativeTime, formatDateTime } from './utils/relativeTime';
 // TextGenerateEffect available for future use
@@ -45,6 +47,43 @@ function getHeatLevel(score: number): { label: string; color: string } {
   return { label: '冷', color: 'text-slate-500' };
 }
 
+function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
+const AI_PROVIDER_DEFAULTS = {
+  openai: {
+    baseUrl: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini'
+  },
+  anthropic: {
+    baseUrl: 'https://api.anthropic.com/v1',
+    model: 'claude-3-5-sonnet-20241022'
+  },
+  google: {
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    model: 'gemini-2.0-flash'
+  }
+} as const;
+
+type AIProvider = keyof typeof AI_PROVIDER_DEFAULTS;
+
+interface AISettingsForm {
+  aiProvider: AIProvider;
+  aiBaseUrl: string;
+  aiModel: string;
+  aiApiKey: string;
+  aiApiKeyConfigured: boolean;
+}
+
+const defaultAISettings: AISettingsForm = {
+  aiProvider: 'openai',
+  aiBaseUrl: AI_PROVIDER_DEFAULTS.openai.baseUrl,
+  aiModel: AI_PROVIDER_DEFAULTS.openai.model,
+  aiApiKey: '',
+  aiApiKeyConfigured: false
+};
+
 function App() {
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [hotspots, setHotspots] = useState<Hotspot[]>([]);
@@ -57,23 +96,27 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isChecking, setIsChecking] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'keywords' | 'search'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'keywords' | 'search' | 'settings'>('dashboard');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [dashboardFilters, setDashboardFilters] = useState<FilterState>({ ...defaultFilterState });
   const [searchFilters, setSearchFilters] = useState<FilterState>({ ...defaultFilterState });
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
-  const [searchResults, setSearchResults] = useState<Hotspot[]>([]);
+  const [searchResults, setSearchResults] = useState<SearchHotspot[]>([]);
   // 展开/折叠状态
   const [expandedReasons, setExpandedReasons] = useState<Set<string>>(new Set());
   const [expandedContents, setExpandedContents] = useState<Set<string>>(new Set());
   const [allReasonsExpanded, setAllReasonsExpanded] = useState(false);
+  const [aiSettings, setAISettings] = useState<AISettingsForm>(defaultAISettings);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [isLoadingSettings, setIsLoadingSettings] = useState(false);
+  const subscribedKeywordsRef = useRef<string[]>([]);
 
   // 加载数据
   const loadData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const filterParams: Record<string, string | number> = {
+      const filterParams: HotspotQueryParams = {
         limit: 20,
         page: currentPage,
       };
@@ -88,7 +131,7 @@ function App() {
 
       const [keywordsData, hotspotsData, statsData, notifData] = await Promise.all([
         keywordsApi.getAll(),
-        hotspotsApi.getAll(filterParams as any),
+        hotspotsApi.getAll(filterParams),
         hotspotsApi.getStats(),
         notificationsApi.getAll({ limit: 20 })
       ]);
@@ -98,12 +141,6 @@ function App() {
       setStats(statsData);
       setNotifications(notifData.data);
       setUnreadCount(notifData.unreadCount);
-
-      // 订阅关键词
-      const activeKeywords = keywordsData.filter(k => k.isActive).map(k => k.text);
-      if (activeKeywords.length > 0) {
-        subscribeToKeywords(activeKeywords);
-      }
     } catch (error) {
       console.error('Failed to load data:', error);
     } finally {
@@ -119,6 +156,62 @@ function App() {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  const loadSettings = useCallback(async () => {
+    setIsLoadingSettings(true);
+    try {
+      const settings = await settingsApi.getAll();
+      const provider = (settings.aiProvider as AIProvider) || 'openai';
+      const defaults = AI_PROVIDER_DEFAULTS[provider] || AI_PROVIDER_DEFAULTS.openai;
+
+      setAISettings({
+        aiProvider: provider,
+        aiBaseUrl: settings.aiBaseUrl || defaults.baseUrl,
+        aiModel: settings.aiModel || defaults.model,
+        aiApiKey: '',
+        aiApiKeyConfigured: settings.aiApiKeyConfigured === 'true'
+      });
+    } catch (error) {
+      console.error('Failed to load settings:', error);
+    } finally {
+      setIsLoadingSettings(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadSettings();
+  }, [loadSettings]);
+
+  useEffect(() => {
+    const activeKeywords = keywords
+      .filter(keyword => keyword.isActive)
+      .map(keyword => keyword.text);
+
+    const prevKeywords = subscribedKeywordsRef.current;
+    const nextSet = new Set(activeKeywords);
+    const prevSet = new Set(prevKeywords);
+
+    const addedKeywords = activeKeywords.filter(keyword => !prevSet.has(keyword));
+    const removedKeywords = prevKeywords.filter(keyword => !nextSet.has(keyword));
+
+    if (addedKeywords.length > 0) {
+      subscribeToKeywords(addedKeywords);
+    }
+
+    if (removedKeywords.length > 0) {
+      unsubscribeFromKeywords(removedKeywords);
+    }
+
+    subscribedKeywordsRef.current = activeKeywords;
+  }, [keywords]);
+
+  useEffect(() => {
+    return () => {
+      if (subscribedKeywordsRef.current.length > 0) {
+        unsubscribeFromKeywords(subscribedKeywordsRef.current);
+      }
+    };
+  }, []);
 
   // WebSocket 事件
   useEffect(() => {
@@ -153,9 +246,8 @@ function App() {
       setKeywords(prev => [keyword, ...prev]);
       setNewKeyword('');
       showToast('关键词添加成功', 'success');
-      subscribeToKeywords([keyword.text]);
-    } catch (error: any) {
-      showToast(error.message || '添加失败', 'error');
+    } catch (error: unknown) {
+      showToast(getErrorMessage(error, '添加失败'), 'error');
     }
   };
 
@@ -165,7 +257,7 @@ function App() {
       await keywordsApi.delete(id);
       setKeywords(prev => prev.filter(k => k.id !== id));
       showToast('关键词已删除', 'success');
-    } catch (error) {
+    } catch {
       showToast('删除失败', 'error');
     }
   };
@@ -175,7 +267,7 @@ function App() {
     try {
       const updated = await keywordsApi.toggle(id);
       setKeywords(prev => prev.map(k => k.id === id ? updated : k));
-    } catch (error) {
+    } catch {
       showToast('操作失败', 'error');
     }
   };
@@ -190,7 +282,7 @@ function App() {
       const result = await hotspotsApi.search(searchQuery);
       setSearchResults(result.results);
       showToast(`找到 ${result.results.length} 条结果`, 'success');
-    } catch (error) {
+    } catch {
       showToast('搜索失败', 'error');
     } finally {
       setIsLoading(false);
@@ -204,7 +296,7 @@ function App() {
       await triggerHotspotCheck();
       showToast('热点检查已触发', 'success');
       setTimeout(loadData, 5000);
-    } catch (error) {
+    } catch {
       showToast('触发失败', 'error');
     } finally {
       setIsChecking(false);
@@ -219,6 +311,45 @@ function App() {
       setNotifications(prev => prev.map(n => ({ ...n, isRead: true })));
     } catch (error) {
       console.error('Failed to mark as read:', error);
+    }
+  };
+
+  const handleProviderChange = (provider: AIProvider) => {
+    const defaults = AI_PROVIDER_DEFAULTS[provider];
+    setAISettings(prev => ({
+      ...prev,
+      aiProvider: provider,
+      aiBaseUrl: defaults.baseUrl,
+      aiModel: defaults.model
+    }));
+  };
+
+  const handleSaveAISettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingSettings(true);
+
+    try {
+      const payload: Record<string, string> = {
+        aiProvider: aiSettings.aiProvider,
+        aiBaseUrl: aiSettings.aiBaseUrl.trim(),
+        aiModel: aiSettings.aiModel.trim()
+      };
+
+      if (aiSettings.aiApiKey.trim()) {
+        payload.aiApiKey = aiSettings.aiApiKey.trim();
+      }
+
+      await settingsApi.update(payload);
+      setAISettings(prev => ({
+        ...prev,
+        aiApiKey: '',
+        aiApiKeyConfigured: prev.aiApiKeyConfigured || !!payload.aiApiKey
+      }));
+      showToast('AI 提供商设置已保存', 'success');
+    } catch {
+      showToast('设置保存失败', 'error');
+    } finally {
+      setIsSavingSettings(false);
     }
   };
 
@@ -266,9 +397,6 @@ function App() {
     } else if (searchFilters.isReal === 'false') {
       results = results.filter(h => !h.isReal);
     }
-    if (searchFilters.keywordId) {
-      results = results.filter(h => h.keyword?.id === searchFilters.keywordId);
-    }
     if (searchFilters.timeRange) {
       const now = new Date();
       let dateFrom: Date | null = null;
@@ -279,7 +407,7 @@ function App() {
         case '30d': dateFrom = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000); break;
       }
       if (dateFrom) {
-        results = results.filter(h => new Date(h.createdAt) >= dateFrom!);
+        results = results.filter(h => new Date(h.publishedAt || h.createdAt) >= dateFrom!);
       }
     }
 
@@ -330,8 +458,8 @@ function App() {
       <Spotlight className="-top-40 left-0 md:left-60 md:-top-20" fill="#3b82f6" />
       
       {/* Subtle gradient orbs */}
-      <div className="fixed top-0 right-0 w-[600px] h-[600px] bg-blue-500/5 rounded-full blur-3xl pointer-events-none" />
-      <div className="fixed bottom-0 left-0 w-[400px] h-[400px] bg-cyan-500/5 rounded-full blur-3xl pointer-events-none" />
+      <div className="fixed top-0 right-0 w-150 h-150 bg-blue-500/5 rounded-full blur-3xl pointer-events-none" />
+      <div className="fixed bottom-0 left-0 w-100 h-100 bg-cyan-500/5 rounded-full blur-3xl pointer-events-none" />
 
       {/* Toast */}
       <AnimatePresence>
@@ -360,7 +488,7 @@ function App() {
             {/* Logo */}
             <div className="flex items-center gap-4">
               <div className="relative">
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-cyan-400 flex items-center justify-center shadow-lg shadow-blue-500/20">
+                <div className="w-10 h-10 rounded-xl bg-linear-to-br from-blue-500 to-cyan-400 flex items-center justify-center shadow-lg shadow-blue-500/20">
                   <Flame className="w-5 h-5 text-white" />
                 </div>
                 <div className="absolute -bottom-1 -right-1 w-3 h-3 bg-emerald-400 rounded-full border-2 border-[#050510] animate-pulse" />
@@ -382,7 +510,7 @@ function App() {
                   "px-4 py-2.5 rounded-xl text-sm font-medium flex items-center gap-2 transition-all",
                   isChecking 
                     ? "bg-blue-500/20 text-blue-400 cursor-wait"
-                    : "bg-gradient-to-r from-blue-600 to-cyan-500 text-white shadow-lg shadow-blue-500/25 hover:shadow-blue-500/40"
+                    : "bg-linear-to-r from-blue-600 to-cyan-500 text-white shadow-lg shadow-blue-500/25 hover:shadow-blue-500/40"
                 )}
               >
                 <RefreshCw className={cn("w-4 h-4", isChecking && "animate-spin")} />
@@ -450,6 +578,7 @@ function App() {
             { key: 'dashboard', label: '热点雷达', icon: Activity },
             { key: 'keywords', label: '监控词', icon: Target },
             { key: 'search', label: '搜索', icon: Search },
+            { key: 'settings', label: '设置', icon: Settings },
           ] as const).map(({ key, label, icon: Icon }) => (
             <button
               key={key}
@@ -476,9 +605,9 @@ function App() {
                 <motion.div 
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="relative group p-5 rounded-2xl bg-gradient-to-br from-blue-500/10 to-transparent border border-blue-500/10 overflow-hidden"
+                  className="relative group p-5 rounded-2xl bg-linear-to-br from-blue-500/10 to-transparent border border-blue-500/10 overflow-hidden"
                 >
-                  <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                  <div className="absolute inset-0 bg-linear-to-br from-blue-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
                   <div className="relative">
                     <div className="flex items-center gap-2 text-slate-500 text-sm mb-2">
                       <Activity className="w-4 h-4" />
@@ -492,9 +621,9 @@ function App() {
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: 0.05 }}
-                  className="relative group p-5 rounded-2xl bg-gradient-to-br from-cyan-500/10 to-transparent border border-cyan-500/10 overflow-hidden"
+                  className="relative group p-5 rounded-2xl bg-linear-to-br from-cyan-500/10 to-transparent border border-cyan-500/10 overflow-hidden"
                 >
-                  <div className="absolute inset-0 bg-gradient-to-br from-cyan-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                  <div className="absolute inset-0 bg-linear-to-br from-cyan-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
                   <div className="relative">
                     <div className="flex items-center gap-2 text-slate-500 text-sm mb-2">
                       <Clock className="w-4 h-4" />
@@ -508,7 +637,7 @@ function App() {
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: 0.1 }}
-                  className="relative group p-5 rounded-2xl bg-gradient-to-br from-red-500/10 to-transparent border border-red-500/10 overflow-hidden"
+                  className="relative group p-5 rounded-2xl bg-linear-to-br from-red-500/10 to-transparent border border-red-500/10 overflow-hidden"
                 >
                   <Meteors number={6} />
                   <div className="relative">
@@ -524,9 +653,9 @@ function App() {
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: 0.15 }}
-                  className="relative group p-5 rounded-2xl bg-gradient-to-br from-emerald-500/10 to-transparent border border-emerald-500/10 overflow-hidden"
+                  className="relative group p-5 rounded-2xl bg-linear-to-br from-emerald-500/10 to-transparent border border-emerald-500/10 overflow-hidden"
                 >
-                  <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                  <div className="absolute inset-0 bg-linear-to-br from-emerald-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
                   <div className="relative">
                     <div className="flex items-center gap-2 text-slate-500 text-sm mb-2">
                       <Target className="w-4 h-4" />
@@ -593,7 +722,7 @@ function App() {
                       initial={{ opacity: 0, x: -10 }}
                       animate={{ opacity: 1, x: 0 }}
                       transition={{ delay: index * 0.03 }}
-                      className="group p-5 rounded-2xl bg-white/[0.02] hover:bg-white/[0.04] border border-white/5 hover:border-white/10 transition-all"
+                      className="group p-5 rounded-2xl bg-white/2 hover:bg-white/4 border border-white/5 hover:border-white/10 transition-all"
                     >
                       <div className="flex items-start justify-between gap-4">
                         <div className="flex-1 min-w-0">
@@ -793,7 +922,7 @@ function App() {
                                     exit={{ height: 0, opacity: 0 }}
                                     className="overflow-hidden"
                                   >
-                                    <p className="text-xs text-slate-500 mt-1 pl-4 border-l-2 border-white/10 whitespace-pre-wrap break-words max-h-40 overflow-y-auto">
+                                    <p className="text-xs text-slate-500 mt-1 pl-4 border-l-2 border-white/10 whitespace-pre-wrap wrap-break-word max-h-40 overflow-y-auto">
                                       {hotspot.content}
                                     </p>
                                   </motion.div>
@@ -878,7 +1007,7 @@ function App() {
         {activeTab === 'keywords' && (
           <div className="space-y-6">
             {/* Add Keyword Card */}
-            <form onSubmit={handleAddKeyword} className="p-5 rounded-2xl bg-white/[0.02] border border-white/5">
+            <form onSubmit={handleAddKeyword} className="p-5 rounded-2xl bg-white/2 border border-white/5">
               <div className="flex gap-3">
                 <div className="flex-1 relative">
                   <input
@@ -893,7 +1022,7 @@ function App() {
                   type="submit" 
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
-                  className="px-6 py-3 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-500 text-white font-medium flex items-center gap-2 shadow-lg shadow-blue-500/25"
+                  className="px-6 py-3 rounded-xl bg-linear-to-r from-blue-600 to-cyan-500 text-white font-medium flex items-center gap-2 shadow-lg shadow-blue-500/25"
                 >
                   <Plus className="w-4 h-4" />
                   添加
@@ -915,8 +1044,8 @@ function App() {
                     className={cn(
                       "group p-4 rounded-xl border transition-all",
                       keyword.isActive 
-                        ? "bg-white/[0.03] border-blue-500/20 hover:border-blue-500/30" 
-                        : "bg-white/[0.01] border-white/5 opacity-60"
+                        ? "bg-white/3 border-blue-500/20 hover:border-blue-500/30" 
+                        : "bg-white/1 border-white/5 opacity-60"
                     )}
                   >
                     <div className="flex items-center justify-between">
@@ -975,7 +1104,7 @@ function App() {
         {activeTab === 'search' && (
           <div className="space-y-6">
             {/* Search Form */}
-            <form onSubmit={handleSearch} className="p-5 rounded-2xl bg-white/[0.02] border border-white/5">
+            <form onSubmit={handleSearch} className="p-5 rounded-2xl bg-white/2 border border-white/5">
               <div className="flex gap-3">
                 <div className="flex-1 relative">
                   <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-600" />
@@ -992,7 +1121,7 @@ function App() {
                   disabled={isLoading}
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
-                  className="px-6 py-3 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-500 text-white font-medium flex items-center gap-2 shadow-lg shadow-blue-500/25 disabled:opacity-50"
+                  className="px-6 py-3 rounded-xl bg-linear-to-r from-blue-600 to-cyan-500 text-white font-medium flex items-center gap-2 shadow-lg shadow-blue-500/25 disabled:opacity-50"
                 >
                   {isLoading ? (
                     <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
@@ -1009,6 +1138,7 @@ function App() {
               filters={searchFilters}
               onChange={setSearchFilters}
               keywords={keywords}
+              showKeywordFilter={false}
             />
 
             {/* Search Results */}
@@ -1028,7 +1158,7 @@ function App() {
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: i * 0.03 }}
-                  className="group p-5 rounded-2xl bg-white/[0.02] hover:bg-white/[0.04] border border-white/5 transition-all"
+                  className="group p-5 rounded-2xl bg-white/2 hover:bg-white/4 border border-white/5 transition-all"
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex-1 min-w-0">
@@ -1112,6 +1242,105 @@ function App() {
                 );
               })}
             </div>
+          </div>
+        )}
+
+        {activeTab === 'settings' && (
+          <div className="space-y-6">
+            <form onSubmit={handleSaveAISettings} className="p-6 rounded-2xl bg-white/2 border border-white/5">
+              <div className="flex items-start justify-between gap-4 mb-6">
+                <div>
+                  <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+                    <Bot className="w-5 h-5 text-blue-400" />
+                    AI 提供商配置
+                  </h2>
+                  <p className="text-sm text-slate-500 mt-1">
+                    支持 OpenAI、Anthropic、Google。空白 API Key 不会覆盖已保存的密钥。
+                  </p>
+                </div>
+                {isLoadingSettings && (
+                  <div className="text-xs text-slate-500">加载中...</div>
+                )}
+              </div>
+
+              <div className="grid gap-5 md:grid-cols-2">
+                <label className="block">
+                  <span className="text-xs text-slate-500 mb-2 block">提供商</span>
+                  <select
+                    value={aiSettings.aiProvider}
+                    onChange={(e) => handleProviderChange(e.target.value as AIProvider)}
+                    className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white focus:outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                  >
+                    <option value="openai">OpenAI / Compatible</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="google">Google Gemini</option>
+                  </select>
+                </label>
+
+                <label className="block">
+                  <span className="text-xs text-slate-500 mb-2 block">模型</span>
+                  <div className="relative">
+                    <Bot className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600" />
+                    <input
+                      type="text"
+                      value={aiSettings.aiModel}
+                      onChange={(e) => setAISettings(prev => ({ ...prev, aiModel: e.target.value }))}
+                      placeholder="例如 gpt-4o-mini"
+                      className="w-full pl-11 pr-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                    />
+                  </div>
+                </label>
+
+                <label className="block md:col-span-2">
+                  <span className="text-xs text-slate-500 mb-2 block">Base URL</span>
+                  <div className="relative">
+                    <Link2 className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600" />
+                    <input
+                      type="text"
+                      value={aiSettings.aiBaseUrl}
+                      onChange={(e) => setAISettings(prev => ({ ...prev, aiBaseUrl: e.target.value }))}
+                      placeholder="例如 https://api.openai.com/v1"
+                      className="w-full pl-11 pr-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                    />
+                  </div>
+                </label>
+
+                <label className="block md:col-span-2">
+                  <span className="text-xs text-slate-500 mb-2 block">API Key</span>
+                  <div className="relative">
+                    <KeyRound className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600" />
+                    <input
+                      type="password"
+                      value={aiSettings.aiApiKey}
+                      onChange={(e) => setAISettings(prev => ({ ...prev, aiApiKey: e.target.value }))}
+                      placeholder={aiSettings.aiApiKeyConfigured ? '已保存密钥，留空则保持不变' : '输入新的 API Key'}
+                      className="w-full pl-11 pr-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/20 transition-all"
+                    />
+                  </div>
+                  <p className="text-xs text-slate-600 mt-2">
+                    {aiSettings.aiApiKeyConfigured ? '当前已配置密钥。' : '当前尚未配置密钥。'}
+                  </p>
+                </label>
+              </div>
+
+              <div className="flex items-center justify-between gap-4 mt-6">
+                <p className="text-xs text-slate-600">
+                  推荐 Base URL：
+                  OpenAI `https://api.openai.com/v1`，
+                  Anthropic `https://api.anthropic.com/v1`，
+                  Google `https://generativelanguage.googleapis.com/v1beta`
+                </p>
+                <motion.button
+                  type="submit"
+                  disabled={isSavingSettings}
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  className="px-5 py-3 rounded-xl bg-linear-to-r from-blue-600 to-cyan-500 text-white font-medium shadow-lg shadow-blue-500/25 disabled:opacity-50"
+                >
+                  {isSavingSettings ? '保存中...' : '保存设置'}
+                </motion.button>
+              </div>
+            </form>
           </div>
         )}
       </main>

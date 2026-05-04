@@ -33,7 +33,7 @@
 | 前端 | React + Vite + TailwindCSS | 响应式、赛博朋克风格 UI |
 | 后端 | Node.js + Express | 轻量级 API 服务 |
 | 数据库 | SQLite + Prisma | 轻量存储、ORM |
-| AI 服务 | OpenRouter API | 热点验证、内容分析 |
+| AI 服务 | OpenAI / Anthropic / Google / OpenAI Compatible | 热点验证、内容分析 |
 | 定时任务 | node-cron | 定时热点抓取 |
 | 实时通信 | Socket.io | 浏览器推送 |
 | 邮件 | Nodemailer | 邮件通知 |
@@ -83,8 +83,11 @@ yupi-hot-monitor/
 ## ⚙️ 配置说明
 
 ```env
-# OpenRouter AI
-OPENROUTER_API_KEY=your_openrouter_key
+# AI Provider
+AI_PROVIDER=openai
+AI_BASE_URL=https://api.openai.com/v1
+AI_API_KEY=your_ai_api_key
+AI_MODEL=gpt-4o-mini
 
 # Twitter API (twitterapi.io)
 TWITTER_API_KEY=your_twitter_api_key
@@ -124,7 +127,7 @@ cd client && npm run dev
 - [ ] 项目初始化
 - [ ] 后端 API 开发
 - [ ] 数据源对接
-- [ ] AI 集成 (OpenRouter)
+- [ ] AI 集成 (Provider 可切换)
 - [ ] 前端页面开发
 - [ ] 通知系统开发
 - [ ] 测试与验收

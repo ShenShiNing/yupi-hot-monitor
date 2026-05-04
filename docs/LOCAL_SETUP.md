@@ -29,18 +29,22 @@ cd yupi-hot-monitor
 
 ## 第二步：获取 API Key
 
-项目需要 **1 个必需的 API Key**，另外 2 个为可选。
+项目需要 **1 个必需的 AI API Key**，另外 2 个为可选。
 
-### ✅ 必需：OpenRouter API Key
+### ✅ 必需：AI Provider API Key
 
-OpenRouter 是一个统一的 AI 大模型接入平台，注册即可使用。
+后端支持以下 3 类 AI 提供商：
+- OpenAI / 兼容 OpenAI Chat Completions 的服务
+- Anthropic
+- Google Gemini
 
-1. 打开 [https://openrouter.ai/](https://openrouter.ai/)，注册并登录
-2. 进入 [API Keys 页面](https://openrouter.ai/settings/keys)
-3. 点击 **Create Key**，复制生成的 Key（以 `sk-or-v1-` 开头）
-4. 确保账户有一定额度（新用户通常有免费额度）
+你可以任选其一准备：
 
-> 💡 如果账户没有额度，需要在 [Credits 页面](https://openrouter.ai/settings/credits) 充值少量金额（几美元即可用很久）。
+1. OpenAI：准备 API Key，Base URL 通常为 `https://api.openai.com/v1`
+2. Anthropic：准备 API Key，Base URL 通常为 `https://api.anthropic.com/v1`
+3. Google Gemini：准备 API Key，Base URL 通常为 `https://generativelanguage.googleapis.com/v1beta`
+
+> 💡 项目也兼容旧版 `OPENROUTER_API_KEY` 配置；如果你之前已经在用 OpenRouter，可以继续沿用。
 
 ### 🔧 可选：Twitter API Key
 
@@ -77,10 +81,16 @@ DATABASE_URL="file:./dev.db"
 
 # 服务器配置（无需修改）
 PORT=3001
-CLIENT_URL=http://localhost:5173
+CLIENT_URL=http://localhost:5000
 
-# ✅ 必填：OpenRouter AI
-OPENROUTER_API_KEY=sk-or-v1-你的key粘贴到这里
+# ✅ 必填：AI Provider（三选一，也可在前端设置页填写）
+AI_PROVIDER=openai
+AI_BASE_URL=https://api.openai.com/v1
+AI_API_KEY=你的key粘贴到这里
+AI_MODEL=gpt-4o-mini
+
+# 兼容旧版 OpenRouter（二选一）
+# OPENROUTER_API_KEY=sk-or-v1-你的key
 
 # 🔧 选填：Twitter API（不填则不抓取 Twitter 数据）
 TWITTER_API_KEY=你的twitter_api_key
@@ -170,14 +180,14 @@ npm run dev
 ```
 VITE v7.x.x ready in xxx ms
 
-➜  Local:   http://localhost:5173/
+➜  Local:   http://localhost:5000/
 ```
 
 
 
 ## 第七步：访问项目
 
-打开浏览器，访问 **http://localhost:5173** ，你将看到 AI 热点监控工具的界面。
+打开浏览器，访问 **http://localhost:5000** ，你将看到 AI 热点监控工具的界面。
 
 ### 快速体验流程
 
@@ -212,7 +222,7 @@ npx prisma generate
 ### Q3：热点搜索没有结果
 
 **可能原因**：
-1. OpenRouter API Key 未填写或额度不足 → 检查 `.env` 中的 `OPENROUTER_API_KEY`
+1. AI Provider 配置未填写或额度不足 → 检查 `.env` 中的 `AI_PROVIDER / AI_BASE_URL / AI_API_KEY / AI_MODEL`
 2. 关键词太冷门 → 尝试更热门的关键词，如 "AI"、"ChatGPT"
 3. 网络问题导致搜索引擎爬虫失败 → 检查终端日志中是否有报错信息
 
@@ -264,5 +274,5 @@ npx prisma studio
 | 服务 | 默认端口 | 说明 |
 |------|----------|------|
 | 后端 API | 3001 | Express + Socket.io |
-| 前端页面 | 5173 | Vite 开发服务器 |
+| 前端页面 | 5000 | Vite 开发服务器 |
 | Prisma Studio | 5555 | 数据库可视化（可选） |

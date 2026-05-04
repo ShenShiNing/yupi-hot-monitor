@@ -1,21 +1,21 @@
 # 🔌 API 集成技术文档
 
-## 1. OpenRouter API 集成
+## 1. AI Provider 集成
 
-### 1.1 SDK 安装
+### 1.1 当前支持的 Provider
 
-```bash
-npm install @openrouter/sdk
-```
+- OpenAI / OpenAI Compatible
+- Anthropic
+- Google Gemini
+- 兼容旧版 OpenRouter Key 作为 OpenAI Compatible 使用
 
 ### 1.2 基本配置
 
 ```typescript
-import { OpenRouter } from "@openrouter/sdk";
-
-const openRouter = new OpenRouter({
-  apiKey: process.env.OPENROUTER_API_KEY ?? "",
-});
+AI_PROVIDER=openai
+AI_BASE_URL=https://api.openai.com/v1
+AI_API_KEY=your_ai_api_key
+AI_MODEL=gpt-4o-mini
 ```
 
 ### 1.3 Chat Completion 调用
@@ -369,7 +369,7 @@ const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: process.env.CLIENT_URL || 'http://localhost:5173',
+    origin: process.env.CLIENT_URL || 'http://localhost:5000',
     methods: ['GET', 'POST']
   }
 });

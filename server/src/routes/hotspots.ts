@@ -1,8 +1,16 @@
 import { Router } from 'express';
 import { prisma } from '../db.js';
 import { sortHotspots } from '../utils/sortHotspots.js';
+import type { AIAnalysis, SearchResult } from '../types.js';
 
 const router = Router();
+
+function buildSearchResultId(item: SearchResult, index: number): string {
+  if (item.sourceId) {
+    return `${item.source}:${item.sourceId}`;
+  }
+  return `${item.source}:${index}:${Buffer.from(item.url).toString('base64')}`;
+}
 
 // 获取所有热点
 router.get('/', async (req, res) => {
@@ -197,7 +205,7 @@ router.post('/search', async (req, res) => {
     const { searchBing } = await import('../services/search.js');
     const { analyzeContent } = await import('../services/ai.js');
 
-    const results: any[] = [];
+    const results: SearchResult[] = [];
 
     // Twitter 搜索
     if (sources.includes('twitter')) {
@@ -220,14 +228,54 @@ router.post('/search', async (req, res) => {
     }
 
     // AI 分析前几个结果
+    const searchedAt = new Date().toISOString();
+    const fallbackAnalysis: AIAnalysis = {
+      isReal: true,
+      relevance: 0,
+      relevanceReason: '搜索结果分析失败',
+      keywordMentioned: false,
+      importance: 'low',
+      summary: ''
+    };
+
     const analyzedResults = await Promise.all(
       results.slice(0, 10).map(async (item) => {
+        let analysis: AIAnalysis;
         try {
-          const analysis = await analyzeContent(item.title + ' ' + item.content, query);
-          return { ...item, analysis };
+          analysis = await analyzeContent(item.title + ' ' + item.content, query);
         } catch {
-          return { ...item, analysis: null };
+          analysis = fallbackAnalysis;
         }
+
+        return {
+          id: buildSearchResultId(item, results.indexOf(item)),
+          title: item.title,
+          content: item.content,
+          url: item.url,
+          source: item.source,
+          sourceId: item.sourceId || null,
+          isReal: analysis.isReal,
+          relevance: analysis.relevance,
+          relevanceReason: analysis.relevanceReason || null,
+          keywordMentioned: analysis.keywordMentioned ?? null,
+          importance: analysis.importance,
+          summary: analysis.summary || null,
+          viewCount: item.viewCount ?? null,
+          likeCount: item.likeCount ?? null,
+          retweetCount: item.retweetCount ?? null,
+          replyCount: item.replyCount ?? null,
+          commentCount: item.commentCount ?? null,
+          quoteCount: item.quoteCount ?? null,
+          danmakuCount: item.danmakuCount ?? null,
+          authorName: item.author?.name || null,
+          authorUsername: item.author?.username || null,
+          authorAvatar: item.author?.avatar || null,
+          authorFollowers: item.author?.followers ?? null,
+          authorVerified: item.author?.verified ?? null,
+          publishedAt: item.publishedAt ? item.publishedAt.toISOString() : null,
+          createdAt: searchedAt,
+          keyword: null
+        };
       })
     );
 

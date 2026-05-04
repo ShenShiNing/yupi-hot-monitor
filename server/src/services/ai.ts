@@ -1,9 +1,154 @@
-import { OpenRouter } from '@openrouter/sdk';
 import type { AIAnalysis } from '../types.js';
+import { getAIConfig } from './aiConfig.js';
 
-const openRouter = new OpenRouter({
-  apiKey: process.env.OPENROUTER_API_KEY ?? ''
-});
+interface ChatMessage {
+  role: 'system' | 'user';
+  content: string;
+}
+
+interface ChatCompletionOptions {
+  temperature: number;
+  maxTokens: number;
+}
+
+function extractOpenAIText(content: unknown): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map(part => {
+        if (typeof part === 'string') return part;
+        if (part && typeof part === 'object' && 'text' in part && typeof part.text === 'string') {
+          return part.text;
+        }
+        return '';
+      })
+      .join('\n');
+  }
+  return '';
+}
+
+function buildGoogleContents(messages: ChatMessage[]) {
+  return messages
+    .filter(message => message.role !== 'system')
+    .map(message => ({
+      role: message.role === 'user' ? 'user' : 'model',
+      parts: [{ text: message.content }]
+    }));
+}
+
+async function postJson(url: string, init: RequestInit, timeoutMs: number = 30_000): Promise<any> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...init,
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      throw new Error(`${response.status} ${response.statusText}${errorText ? ` - ${errorText.slice(0, 300)}` : ''}`);
+    }
+
+    return response.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function sendChat(messages: ChatMessage[], options: ChatCompletionOptions): Promise<string> {
+  const config = await getAIConfig();
+  if (!config) {
+    throw new Error('AI provider not configured');
+  }
+
+  if (config.provider === 'anthropic') {
+    const system = messages
+      .filter(message => message.role === 'system')
+      .map(message => message.content)
+      .join('\n\n');
+
+    const response = await postJson(`${config.baseUrl}/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': config.apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: config.model,
+        system: system || undefined,
+        messages: messages
+          .filter(message => message.role !== 'system')
+          .map(message => ({
+            role: 'user',
+            content: message.content
+          })),
+        temperature: options.temperature,
+        max_tokens: options.maxTokens
+      })
+    });
+
+    return Array.isArray(response.content)
+      ? response.content
+          .map((part: any) => (part?.type === 'text' ? part.text : ''))
+          .join('\n')
+      : '';
+  }
+
+  if (config.provider === 'google') {
+    const system = messages
+      .filter(message => message.role === 'system')
+      .map(message => message.content)
+      .join('\n\n');
+
+    const response = await postJson(`${config.baseUrl}/models/${config.model}:generateContent`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': config.apiKey
+      },
+      body: JSON.stringify({
+        systemInstruction: system
+          ? {
+              parts: [{ text: system }]
+            }
+          : undefined,
+        contents: buildGoogleContents(messages),
+        generationConfig: {
+          temperature: options.temperature,
+          maxOutputTokens: options.maxTokens
+        }
+      })
+    });
+
+    return Array.isArray(response.candidates)
+      ? response.candidates
+          .flatMap((candidate: any) => candidate?.content?.parts ?? [])
+          .map((part: any) => (typeof part?.text === 'string' ? part.text : ''))
+          .join('\n')
+      : '';
+  }
+
+  const response = await postJson(`${config.baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${config.apiKey}`
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages,
+      temperature: options.temperature,
+      max_tokens: options.maxTokens
+    })
+  });
+
+  return extractOpenAIText(response.choices?.[0]?.message?.content);
+}
 
 // ========== Query Expansion（查询扩展） ==========
 
@@ -23,16 +168,15 @@ export async function expandKeyword(keyword: string): Promise<string[]> {
   // 不管 AI 是否可用，先提取基础核心词
   const coreTerms = extractCoreTerms(keyword);
 
-  if (!process.env.OPENROUTER_API_KEY) {
+  if (!(await getAIConfig())) {
     const result = [keyword, ...coreTerms];
     expansionCache.set(keyword, result);
     return result;
   }
 
   try {
-    const result = await openRouter.chat.send({
-      model: 'deepseek/deepseek-v3.2',
-      messages: [
+    const responseContent = await sendChat(
+      [
         {
           role: 'system',
           content: `你是一个搜索查询扩展专家。给定一个监控关键词，生成该关键词的变体和相关检索词，用于文本匹配。
@@ -53,12 +197,11 @@ export async function expandKeyword(keyword: string): Promise<string[]> {
           content: keyword
         }
       ],
-      temperature: 0.2,
-      maxTokens: 300
-    });
-
-    const rawContent = result.choices[0]?.message?.content || '';
-    const responseContent = typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent);
+      {
+        temperature: 0.2,
+        maxTokens: 300
+      }
+    );
     const jsonMatch = responseContent.match(/\[[\s\S]*\]/);
     if (jsonMatch) {
       const parsed: string[] = JSON.parse(jsonMatch[0]);
@@ -152,8 +295,8 @@ export async function analyzeContent(content: string, keyword: string, preMatchR
   // 默认预匹配结果
   const matchResult = preMatchResult ?? { matched: false, matchedTerms: [] };
 
-  if (!process.env.OPENROUTER_API_KEY) {
-    console.warn('OpenRouter API key not configured, using fallback analysis');
+  if (!(await getAIConfig())) {
+    console.warn('AI provider not configured, using fallback analysis');
     return {
       isReal: true,
       relevance: matchResult.matched ? 50 : 20,
@@ -167,9 +310,8 @@ export async function analyzeContent(content: string, keyword: string, preMatchR
   try {
     const prompt = buildAnalysisPrompt(keyword, matchResult);
 
-    const result = await openRouter.chat.send({
-      model: 'deepseek/deepseek-v3.2',
-      messages: [
+    const responseContent = await sendChat(
+      [
         {
           role: 'system',
           content: prompt
@@ -179,12 +321,11 @@ export async function analyzeContent(content: string, keyword: string, preMatchR
           content: content.slice(0, 2000) // 限制内容长度
         }
       ],
-      temperature: 0.2, // 降低温度，提高判断一致性
-      maxTokens: 500
-    });
-
-    const rawContent = result.choices[0]?.message?.content || '';
-    const responseContent = typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent);
+      {
+        temperature: 0.2,
+        maxTokens: 500
+      }
+    );
     
     // 尝试解析 JSON
     const jsonMatch = responseContent.match(/\{[\s\S]*\}/);

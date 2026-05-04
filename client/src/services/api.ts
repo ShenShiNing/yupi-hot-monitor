@@ -40,6 +40,36 @@ export interface Hotspot {
   keyword: { id: string; text: string; category: string | null } | null;
 }
 
+export interface SearchHotspot {
+  id: string;
+  title: string;
+  content: string;
+  url: string;
+  source: string;
+  sourceId: string | null;
+  isReal: boolean;
+  relevance: number;
+  relevanceReason: string | null;
+  keywordMentioned: boolean | null;
+  importance: 'low' | 'medium' | 'high' | 'urgent';
+  summary: string | null;
+  viewCount: number | null;
+  likeCount: number | null;
+  retweetCount: number | null;
+  replyCount: number | null;
+  commentCount: number | null;
+  quoteCount: number | null;
+  danmakuCount: number | null;
+  authorName: string | null;
+  authorUsername: string | null;
+  authorAvatar: string | null;
+  authorFollowers: number | null;
+  authorVerified: boolean | null;
+  publishedAt: string | null;
+  createdAt: string;
+  keyword: { id: string; text: string; category: string | null } | null;
+}
+
 export interface Notification {
   id: string;
   type: string;
@@ -55,6 +85,27 @@ export interface Stats {
   today: number;
   urgent: number;
   bySource: Record<string, number>;
+}
+
+export interface Pagination {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+}
+
+export interface HotspotQueryParams {
+  page?: number;
+  limit?: number;
+  source?: string;
+  importance?: string;
+  keywordId?: string;
+  isReal?: string;
+  timeRange?: string;
+  timeFrom?: string;
+  timeTo?: string;
+  sortBy?: string;
+  sortOrder?: string;
 }
 
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
@@ -105,26 +156,14 @@ export const keywordsApi = {
 
 // Hotspots API
 export const hotspotsApi = {
-  getAll: (params?: { 
-    page?: number; 
-    limit?: number; 
-    source?: string; 
-    importance?: string; 
-    keywordId?: string;
-    isReal?: string;
-    timeRange?: string;
-    timeFrom?: string;
-    timeTo?: string;
-    sortBy?: string;
-    sortOrder?: string;
-  }) => {
+  getAll: (params?: HotspotQueryParams) => {
     const searchParams = new URLSearchParams();
     if (params) {
       Object.entries(params).forEach(([key, value]) => {
         if (value !== undefined && value !== '') searchParams.append(key, String(value));
       });
     }
-    return request<{ data: Hotspot[]; pagination: { page: number; limit: number; total: number; totalPages: number } }>(
+    return request<{ data: Hotspot[]; pagination: Pagination }>(
       `/hotspots?${searchParams}`
     );
   },
@@ -134,7 +173,7 @@ export const hotspotsApi = {
   getById: (id: string) => request<Hotspot>(`/hotspots/${id}`),
   
   search: (query: string, sources?: string[]) => 
-    request<{ results: Hotspot[] }>('/hotspots/search', {
+    request<{ results: SearchHotspot[] }>('/hotspots/search', {
       method: 'POST',
       body: JSON.stringify({ query, sources })
     }),
@@ -152,7 +191,7 @@ export const notificationsApi = {
         if (value !== undefined) searchParams.append(key, String(value));
       });
     }
-    return request<{ data: Notification[]; unreadCount: number; pagination: any }>(
+    return request<{ data: Notification[]; unreadCount: number; pagination: Pagination }>(
       `/notifications?${searchParams}`
     );
   },
