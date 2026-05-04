@@ -47,11 +47,13 @@ export interface HotspotEvent {
 }
 
 export interface NotificationEvent {
+  id: string;
   type: string;
   title: string;
   content: string;
-  hotspotId?: string;
-  importance?: string;
+  isRead: boolean;
+  hotspotId: string | null;
+  createdAt: string;
 }
 
 export function onNewHotspot(callback: (hotspot: HotspotEvent) => void): () => void {

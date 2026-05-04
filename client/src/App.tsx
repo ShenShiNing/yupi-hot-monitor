@@ -221,8 +221,14 @@ function App() {
       loadData();
     });
 
-    const unsubNotif = onNotification(() => {
-      setUnreadCount(prev => prev + 1);
+    const unsubNotif = onNotification((notification) => {
+      setNotifications(prev => {
+        const next = [notification, ...prev.filter(item => item.id !== notification.id)];
+        return next.slice(0, 20);
+      });
+      if (!notification.isRead) {
+        setUnreadCount(prev => prev + 1);
+      }
     });
 
     return () => {

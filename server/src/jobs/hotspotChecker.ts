@@ -209,25 +209,23 @@ export async function runHotspotCheck(io: Server): Promise<void> {
           else otherProcessed++;
           console.log(`  ✅ New hotspot [${item.source}]: ${hotspot.title.slice(0, 40)}... (${analysis.importance})`);
 
+          const notificationContent = analysis.summary?.trim()
+            || hotspot.content.trim().slice(0, 100)
+            || hotspot.title;
+
           // 创建通知
-          await prisma.notification.create({
+          const notification = await prisma.notification.create({
             data: {
               type: 'hotspot',
               title: `发现新热点: ${hotspot.title.slice(0, 50)}`,
-              content: analysis.summary || hotspot.content.slice(0, 100),
+              content: notificationContent,
               hotspotId: hotspot.id
             }
           });
 
           // WebSocket 通知
           io.to(`keyword:${keyword.text}`).emit('hotspot:new', hotspot);
-          io.emit('notification', {
-            type: 'hotspot',
-            title: '发现新热点',
-            content: hotspot.title,
-            hotspotId: hotspot.id,
-            importance: hotspot.importance
-          });
+          io.emit('notification', notification);
 
           // 邮件通知（仅对高重要级别）
           if (['high', 'urgent'].includes(analysis.importance)) {
